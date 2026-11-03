@@ -141,7 +141,10 @@ def main():
     log.info("workers ready")
     sched = Scheduler(cmds, args.slots, args.mode, args.min_switch_batch, args.admit_wait)
     box = {"sched": sched}
-    uvicorn.run(build_app(args, box, results, procs), host="0.0.0.0", port=args.port, log_level="warning")
+    # uvicorn closes idle connections after 5 s by default. A queued request can reuse one
+    # just as it closes ("Cannot write to closing transport"), so keep them open longer.
+    uvicorn.run(build_app(args, box, results, procs), host="0.0.0.0", port=args.port, log_level="warning",
+                timeout_keep_alive=600)
 
 
 if __name__ == "__main__":
