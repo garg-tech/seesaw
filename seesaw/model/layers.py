@@ -5,13 +5,15 @@ all-reduce does the sum; under PP one GPU holds both and adds them locally.
 Same code, so a re-shard only has to move half tensors.
 """
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 
 from vllm.v1.attention.ops.triton_reshape_and_cache_flash import triton_reshape_and_cache_flash
 from vllm.v1.attention.ops.triton_unified_attention import unified_attention
 
 from ..config import BLOCK_SIZE
+
+SEGMENTS = 16       # the decode kernel's parallel softmax segments, as in vLLM
+SEGMENT_SEQS = 8    # above this the 2D path wins: 66.8 vs 64.3 ms at B=32, 38 vs 42 ms at B=1
 
 
 def rms_norm(x, weight, eps):
@@ -71,7 +73,7 @@ class Layer:
             w["v"] = ckpt.rows(p + "self_attn.v_proj.weight", h * kv_n, (h + 1) * kv_n, d)
         return w
 
-    def _attend(self, q, key_cache, value_cache, b):
+    def _attend(self, q, key_cache, value_cache, b, kv):
         out = torch.empty_like(q)
         n = key_cache.shape[2]
         ones = torch.ones((b.cu_seqlens.shape[0] - 1, n), device=q.device)
@@ -82,6 +84,8 @@ class Layer:
             softmax_scale=self.scale, causal=True, window_size=self.window,
             block_table=b.table_full if self.spec.full else b.table_sliding,
             softcap=0, q_descale=None, k_descale=ones, v_descale=ones,
+            seq_threshold_3D=SEGMENT_SEQS, num_par_softmax_segments=SEGMENTS,
+            **kv.segments[self.spec.head_dim],
         )
         return out
 
@@ -111,10 +115,10 @@ class Layer:
                 v = rms_norm(v, None, cfg.eps)
                 kc, vc = kv.k[s.idx][h], kv.v[s.idx][h]
                 self._write_kv(k, v, kc, vc, b.map_sliding)
-            out = F.linear(self._attend(q, kc, vc, b).flatten(-2), w["o"])
+            out = F.linear(self._attend(q, kc, vc, b, kv).flatten(-2), w["o"])
             y = out if y is None else y + out
         if comm is not None:
-            dist.all_reduce(y, group=comm)
+            comm.all_reduce(y, y)
         return y
 
     def mlp(self, x, comm):
@@ -124,7 +128,7 @@ class Layer:
             out = F.linear(act, w["down"])
             y = out if y is None else y + out
         if comm is not None:
-            dist.all_reduce(y, group=comm)
+            comm.all_reduce(y, y)
         return y
 
     def forward(self, x, b, kv, comm=None):
@@ -146,8 +150,14 @@ class KVStore:
     """
 
     def __init__(self, specs, tables, device, halves):
-        self.k, self.v = {}, {}
+        self.k, self.v, self.segments = {}, {}, {}
         for s in specs:
+            # Scratch for the kernels' decode path. Layers run one at a time, so they share it.
+            shape = (SEGMENT_SEQS, s.q_half, SEGMENTS)
+            self.segments.setdefault(s.head_dim, dict(
+                softmax_segm_output=torch.empty((*shape, s.head_dim), dtype=torch.float32, device=device),
+                softmax_segm_max=torch.empty(shape, dtype=torch.float32, device=device),
+                softmax_segm_expsum=torch.empty(shape, dtype=torch.float32, device=device)))
             if s.full:
                 shape = (tables.num_full, BLOCK_SIZE, 1, s.head_dim)
                 self.k[s.idx] = torch.empty(shape, dtype=torch.bfloat16, device=device)

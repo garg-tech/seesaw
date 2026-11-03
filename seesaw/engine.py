@@ -9,8 +9,10 @@ import time
 import numpy as np
 import torch
 import torch.distributed as dist
+from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 
 from .config import ModelConfig, snapshot_dir
+from .decode_graph import DecodeGraphs
 from .kv_cache import Batch, BlockTables
 from .model.gemma4 import Decoder
 from .reshard import SPLIT, Resharder
@@ -35,12 +37,15 @@ def init_worker(rank, port):
 
 
 class Engine:
-    def __init__(self, rank, dev, slots, max_len, chunk, mode="tp", scratch_chunks=2):
+    def __init__(self, rank, dev, slots, max_len, chunk, mode="tp", scratch_chunks=2, graphs=True):
         self.rank, self.dev, self.chunk, self.mode = rank, dev, chunk, "tp"
         self.cfg = ModelConfig.load()
         self.tables = BlockTables(slots, max_len, self.cfg.window,
                                   scratch_blocks=scratch_chunks * (chunk // 16 + 1))
         self.comm = dist.group.WORLD
+        # Runs on the compute stream. torch's collectives use a second stream and
+        # sync to it by event on every call, too slow for 96 all-reduces a step.
+        self.tp_comm = PyNcclCommunicator(dist.new_group(backend="gloo"), dev)
         self.dec = Decoder(self.cfg, snapshot_dir(), dev, range(len(self.cfg.layers)),
                            self.tables, max_len, halves=(rank,))
         self.resharder = Resharder(rank, self.dec.layers, self.dec.kv, self.tables, dev, self.comm)
@@ -50,6 +55,10 @@ class Engine:
         self.vocab_start = rank * half
         self.head_w = self.dec.embed_w[self.vocab_start:self.vocab_start + half]
         self.gen = torch.Generator(dev).manual_seed(0)
+        self.graphs = None
+        if graphs:
+            with torch.inference_mode():
+                self.graphs = DecodeGraphs(self.tables, dev, slots, self._graph_step)
         if mode == "pp":
             self.to_pp()
 
@@ -118,10 +127,13 @@ class Engine:
         return tok
 
     # ---------------------------------------------------------------- forward
+    def _graph_step(self, inputs):
+        return self.dec.forward(self.dec.embed(inputs.tokens), inputs, self.dec.layers, self.tp_comm)
+
     def _forward(self, tokens, b):
         """Run this GPU's part of a pass. Returns hidden states on the GPU that ends it."""
         if self.mode == "tp":
-            return self.dec.forward(self.dec.embed(tokens), b, self.active, self.comm)
+            return self.dec.forward(self.dec.embed(tokens), b, self.active, self.tp_comm)
         if self.rank == 0:
             x = self.dec.forward(self.dec.embed(tokens), b, self.active)
             # Only one pass waits to cross, so stage 0 stays one pass ahead of stage 1.
@@ -178,8 +190,10 @@ class Engine:
         """One token per slot. lens: tokens already in cache; tokens: LongTensor of last outputs."""
         for s, n in zip(slots, lens):
             self.tables.extend(s, n + 1)
-        b = Batch(self.tables, slots, lens, [1] * len(slots), self.dev)
-        y = self._forward(tokens, b)
+        if self.graphs and self.mode == "tp":
+            y = self.graphs.step(slots, lens, tokens)
+        else:
+            y = self._forward(tokens, Batch(self.tables, slots, lens, [1] * len(slots), self.dev))
         for s, n in zip(slots, lens):
             self.tables.trim(s, n + 1)
         return self.sample(y, greedy, len(slots))
