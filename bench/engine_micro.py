@@ -19,7 +19,7 @@ def worker(rank, port, a):
     dev = init_worker(rank, port)
     t0 = time.perf_counter()
     eng = Engine(rank, dev, slots=max(a.batches), max_len=a.prompt + a.steps + 64, chunk=a.chunk, mode=a.mode,
-              graphs=not a.no_graphs)
+              graphs=not a.no_graphs, split=a.split)
     log = (lambda *x: print(*x, flush=True)) if rank == 0 else (lambda *x: None)
     log(f"loaded in {time.perf_counter() - t0:.0f}s, gpu mem {torch.cuda.memory_allocated() / 2**30:.1f} GB")
     rng = np.random.default_rng(0)
@@ -55,6 +55,7 @@ if __name__ == "__main__":
     p.add_argument("--chunk", type=int, default=2048)
     p.add_argument("--mode", default="tp")
     p.add_argument("--no-graphs", action="store_true")
+    p.add_argument("--split", type=int, default=24)
     a = p.parse_args()
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

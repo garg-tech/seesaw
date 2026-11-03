@@ -120,6 +120,7 @@ def main():
     p.add_argument("--slots", type=int, default=32)
     p.add_argument("--max-len", type=int, default=7200)
     p.add_argument("--chunk", type=int, default=2048)
+    p.add_argument("--split", type=int, default=24)
     p.add_argument("--min-switch-batch", type=int, default=4)
     p.add_argument("--admit-wait", type=float, default=0.2)
     p.add_argument("--served-name", default="gemma4-12b")
@@ -128,7 +129,7 @@ def main():
     ctx = mp.get_context("spawn")
     results = ctx.Queue()
     cmds = [ctx.Queue(), ctx.Queue()]
-    worker_args = {"slots": args.slots, "max_len": args.max_len, "chunk": args.chunk}
+    worker_args = {"slots": args.slots, "max_len": args.max_len, "chunk": args.chunk, "split": args.split}
     procs = [ctx.Process(target=worker_main, args=(r, 29411, cmds[r], results, worker_args), daemon=True)
              for r in range(2)]
     for proc in procs:

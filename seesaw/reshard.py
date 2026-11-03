@@ -1,9 +1,11 @@
-"""Move half tensors between GPUs to switch layouts, PP (24/24) <-> TP.
+"""Move half tensors between GPUs to switch layouts, PP (split/48-split) <-> TP.
 
-The split is even and the sliding/full pattern repeats every 6 layers, so layer l
-and layer l + 24 have the same shapes. GPU0's h1 of layer l and GPU1's h0 of layer
-l + 24 therefore swap in place: no spare memory beyond one tensor of staging, and
-nothing is allocated from the pool during a switch.
+Each layer GPU1 gives up pairs with a same-type layer GPU0 gives up, so GPU0's h1
+of one and GPU1's h0 of the other swap in place. Nothing is allocated from the pool
+during a switch beyond one tensor of staging.
+
+A split above 24 leaves front layers with no partner. GPU0 holds their h1 in spare
+tensors allocated at startup, and GPU1's own copies sit idle under PP.
 
 Both GPUs keep identical block tables, so block ids mean the same on either side.
 """
@@ -12,7 +14,7 @@ import time
 import torch
 import torch.distributed as dist
 
-SPLIT = 24
+STAGE_BLOCKS = 2048     # at most 64 MB of staging per exchange
 
 
 def swap(t, peer, group):
@@ -24,26 +26,40 @@ def swap(t, peer, group):
     return t.nbytes
 
 
-def swap_blocks(t, blocks, peer, group):
-    """Same, for the listed blocks of a KV tensor only."""
+def exchange(mine, theirs, blocks, peer, group):
+    """Send the listed blocks of `mine`, receive the peer's into `theirs`."""
+    n = 0
     if blocks.numel() == 0:
-        return 0
-    out = t.index_select(0, blocks)
-    got = torch.empty_like(out)
-    ops = [dist.P2POp(dist.isend, out, peer, group), dist.P2POp(dist.irecv, got, peer, group)]
-    for req in dist.batch_isend_irecv(ops):
-        req.wait()
-    t.index_copy_(0, blocks, got)
-    return out.nbytes
+        return n
+    # GPU0 is nearly full by now, so stage a piece at a time.
+    for idx in blocks.split(STAGE_BLOCKS):
+        out = mine.index_select(0, idx)
+        got = torch.empty_like(out)
+        ops = [dist.P2POp(dist.isend, out, peer, group), dist.P2POp(dist.irecv, got, peer, group)]
+        for req in dist.batch_isend_irecv(ops):
+            req.wait()
+        theirs.index_copy_(0, idx, got)
+        n += out.nbytes
+    return n
 
 
 class Resharder:
-    def __init__(self, rank, layers, kv, tables, dev, group):
+    def __init__(self, rank, layers, kv, tables, dev, group, split):
         self.rank, self.layers, self.kv, self.tables, self.dev, self.group = rank, layers, kv, tables, dev, group
         self.peer = 1 - rank
-        self.pairs = [(l, l + SPLIT) for l in range(SPLIT)]
+        idx = lambda ls, full: [l.spec.idx for l in ls if l.spec.full == full]
+        front, back = layers[:split], layers[split:]
+        self.pairs = [p for full in (False, True) for p in zip(idx(front, full), idx(back, full))]
         for a, b in self.pairs:
             assert layers[a].spec == type(layers[a].spec)(**{**layers[b].spec.__dict__, "idx": a}), (a, b)
+        paired = {a for a, _ in self.pairs}
+        self.extras = [l.spec.idx for l in front if l.spec.idx not in paired]
+        assert not any(layers[a].spec.full for a in self.extras) and len(back) <= len(front), split
+        if rank == 0:
+            self.spare_w = {a: {n: torch.empty_like(t) for n, t in layers[a].h[0].items()} for a in self.extras}
+            self.spare_k = {a: torch.empty_like(kv.k[a][0]) for a in self.extras}
+            self.spare_v = {a: torch.empty_like(kv.v[a][0]) for a in self.extras}
+        self.spares_loaded = False
         self.log = []
 
     def _swap_weights(self, a, b, to_tp):
@@ -60,6 +76,43 @@ class Resharder:
         dst.h[hd] = w
         return n
 
+    def _extras_to_pp(self):
+        """Weights never change, so the spares are filled once and GPU1 keeps its copy."""
+        n = 0
+        for a in self.extras:
+            if self.rank == 0:
+                w = self.spare_w[a]
+                self.layers[a].h[1] = w
+                self.kv.k[a][1], self.kv.v[a][1] = self.spare_k[a], self.spare_v[a]
+            else:
+                w = self.layers[a].h[1]
+            if not self.spares_loaded:
+                for name in sorted(w):
+                    (dist.recv if self.rank == 0 else dist.send)(w[name], self.peer, group=self.group)
+                    n += w[name].nbytes
+        self.spares_loaded = True
+        return n
+
+    def _extras_to_tp(self):
+        """GPU0 made these sequences' h1 KV. GPU1 has to end up with it."""
+        n = 0
+        for a in self.extras:
+            if self.rank == 0:
+                self.layers[a].h.pop(1)
+            for store in (self.kv.k, self.kv.v):
+                t = store[a].pop(1) if self.rank == 0 else store[a][1]
+                if self.used_sliding.numel() == 0:
+                    continue
+                for idx in self.used_sliding.split(STAGE_BLOCKS):
+                    x = t.index_select(0, idx)
+                    if self.rank == 0:
+                        dist.send(x, self.peer, group=self.group)
+                    else:
+                        dist.recv(x, self.peer, group=self.group)
+                        t.index_copy_(0, idx, x)
+                    n += x.nbytes
+        return n
+
     def _swap_kv(self, a, b):
         """PP -> TP only. Sequences in flight keep their blocks."""
         spec = self.layers[a].spec
@@ -69,23 +122,16 @@ class Resharder:
             idx = self.used_full
             mine, theirs = (a, b) if self.rank == 0 else (b, a)
             for store in (k, v):
-                out = store[mine].index_select(0, idx)
-                got = torch.empty_like(out)
-                ops = [dist.P2POp(dist.isend, out, self.peer, self.group),
-                       dist.P2POp(dist.irecv, got, self.peer, self.group)]
-                for req in dist.batch_isend_irecv(ops):
-                    req.wait()
-                store[theirs].index_copy_(0, idx, got)
-                n += out.nbytes
+                n += exchange(store[mine], store[theirs], idx, self.peer, self.group)
             return n
         for store in (k, v):
             if self.rank == 0:
                 t = store[a].pop(1)
-                n += swap_blocks(t, self.used_sliding, self.peer, self.group)
+                n += exchange(t, t, self.used_sliding, self.peer, self.group)
                 store[b][0] = t
             else:
                 t = store[b].pop(0)
-                n += swap_blocks(t, self.used_sliding, self.peer, self.group)
+                n += exchange(t, t, self.used_sliding, self.peer, self.group)
                 store[a][1] = t
         return n
 
@@ -105,20 +151,22 @@ class Resharder:
 
     def to_tp(self):
         torch.cuda.synchronize()
+        torch.cuda.empty_cache()
         dist.barrier(group=self.group)
         t = time.perf_counter()
         self._used()
         w = sum(self._swap_weights(a, b, True) for a, b in self.pairs)
-        k = sum(self._swap_kv(a, b) for a, b in self.pairs)
+        k = sum(self._swap_kv(a, b) for a, b in self.pairs) + self._extras_to_tp()
         torch.cuda.synchronize()
         self.log.append(("pp->tp", time.perf_counter() - t, w, k))
         return self.log[-1]
 
     def to_pp(self):
         torch.cuda.synchronize()
+        torch.cuda.empty_cache()
         dist.barrier(group=self.group)
         t = time.perf_counter()
-        w = sum(self._swap_weights(a, b, False) for a, b in self.pairs)
+        w = sum(self._swap_weights(a, b, False) for a, b in self.pairs) + self._extras_to_pp()
         for a, b in self.pairs:
             self._relabel_kv(a, b)
         torch.cuda.synchronize()

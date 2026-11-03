@@ -15,7 +15,7 @@ from .config import ModelConfig, snapshot_dir
 from .decode_graph import DecodeGraphs
 from .kv_cache import Batch, BlockTables
 from .model.gemma4 import Decoder
-from .reshard import SPLIT, Resharder
+from .reshard import Resharder
 
 # Sockets the GPUs hang off, from lscpu / nvidia-smi topo.
 NUMA_CPUS = {0: [*range(0, 16), *range(32, 48)], 1: [*range(16, 32), *range(48, 64)]}
@@ -37,7 +37,7 @@ def init_worker(rank, port):
 
 
 class Engine:
-    def __init__(self, rank, dev, slots, max_len, chunk, mode="tp", scratch_chunks=2, graphs=True):
+    def __init__(self, rank, dev, slots, max_len, chunk, mode="tp", scratch_chunks=2, graphs=True, split=24):
         self.rank, self.dev, self.chunk, self.mode = rank, dev, chunk, "tp"
         self.cfg = ModelConfig.load()
         self.tables = BlockTables(slots, max_len, self.cfg.window,
@@ -48,7 +48,8 @@ class Engine:
         self.tp_comm = PyNcclCommunicator(dist.new_group(backend="gloo"), dev)
         self.dec = Decoder(self.cfg, snapshot_dir(), dev, range(len(self.cfg.layers)),
                            self.tables, max_len, halves=(rank,))
-        self.resharder = Resharder(rank, self.dec.layers, self.dec.kv, self.tables, dev, self.comm)
+        self.split = split
+        self.resharder = Resharder(rank, self.dec.layers, self.dec.kv, self.tables, dev, self.comm, split)
         self.active = self.dec.layers
         self._sending = None
         half = self.cfg.vocab // 2
@@ -66,7 +67,7 @@ class Engine:
     def to_pp(self):
         out = self.resharder.to_pp()
         self.mode = "pp"
-        self.active = self.dec.layers[:SPLIT] if self.rank == 0 else self.dec.layers[SPLIT:]
+        self.active = self.dec.layers[:self.split] if self.rank == 0 else self.dec.layers[self.split:]
         return out
 
     def to_tp(self):

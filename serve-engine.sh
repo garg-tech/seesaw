@@ -9,5 +9,5 @@ BUSY=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader)
 if [ -n "$BUSY" ]; then echo "ERROR: GPU memory is held by:"; echo "$BUSY"; exit 1; fi
 mkdir -p logs
 LOG="logs/engine_${MODE}_$(date +%Y%m%d_%H%M%S).log"
-tmux new-session -d -s engine "source ../.venv/bin/activate; export TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING=false; python -m seesaw.server --mode $MODE $* 2>&1 | grep --line-buffered -v Warning | tee $LOG"
+tmux new-session -d -s engine "source ../.venv/bin/activate; export TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING=false PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PYTORCH_ALLOC_CONF=expandable_segments:True; python -m seesaw.server --mode $MODE $* 2>&1 | grep --line-buffered -v Warning | tee $LOG"
 echo "started in tmux session 'engine', log $LOG"

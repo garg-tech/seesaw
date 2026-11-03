@@ -14,7 +14,7 @@ from .engine import Engine, init_worker
 def worker_main(rank, port, cmds, results, args):
     dev = init_worker(rank, port)
     try:
-        eng = Engine(rank, dev, args["slots"], args["max_len"], args["chunk"])
+        eng = Engine(rank, dev, args["slots"], args["max_len"], args["chunk"], split=args["split"])
         results.put(("ready", rank))
         with torch.inference_mode():
             while True:
