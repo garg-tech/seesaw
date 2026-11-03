@@ -23,13 +23,12 @@ def worker(rank, port, cases, mode):
     max_len = max(len(c["prompt"]) + len(c["tokens"]) for c in cases) + 16
     eng = Engine(rank, dev, slots=2, max_len=max_len, chunk=2048, mode=mode)
     report = 1 if mode == "pp" else 0     # the rank that sees logits
-    orig = eng.sample
+    orig = eng._candidates
     cap = {}
-    def spy(x, greedy, n):
-        if x is not None:
-            cap["lp"] = eng.logprobs(x)
-        return orig(x, greedy, n)
-    eng.sample = spy
+    def spy(x, k):
+        cap["lp"] = eng.logprobs(x)
+        return orig(x, k)
+    eng._candidates = spy
     bad = 0
     with torch.inference_mode():
         for i, c in enumerate(cases):
