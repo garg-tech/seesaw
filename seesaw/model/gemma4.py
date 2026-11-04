@@ -14,13 +14,11 @@ class Decoder:
         self.cfg, self.device = cfg, device
         ckpt = Checkpoint(snapshot)
         specs = [cfg.layers[i] for i in layer_range]
-        ropes = {}
-        for s in specs:
-            key = "full_attention" if s.full else "sliding_attention"
-            if key not in ropes:
-                ropes[key] = rope_table(s.head_dim, cfg.rope[key], max_len, device)
-        self.layers = [Layer(s, cfg, ckpt, device, ropes["full_attention" if s.full else "sliding_attention"], halves)
-                       for s in specs]
+        self.layers = [Layer(s, cfg, ckpt, device, halves) for s in specs]
+        self.ropes = {}
+        for l in self.layers:
+            if l.rope_key not in self.ropes:
+                self.ropes[l.rope_key] = rope_table(l.spec.head_dim, cfg.rope[l.rope_key], max_len, device)
         self.kv = KVStore(specs, tables, device, halves)
         self.embed_w = ckpt.full("embed_tokens.weight", device) if embed or head else None
         self.final_norm = ckpt.full("norm.weight", device) if head else None
@@ -29,9 +27,11 @@ class Decoder:
     def embed(self, tokens):
         return F.embedding(tokens, self.embed_w) * self.normalizer
 
-    def forward(self, x, batch, layers, comm=None):
-        for layer in layers:
-            x = layer.forward(x, batch, self.kv, comm)
+    def forward(self, x, batch, layers=None, comm=None):
+        # cos/sin once per pass, not once per layer
+        rope = {k: t.index_select(0, batch.positions).unsqueeze(1).chunk(2, -1) for k, t in self.ropes.items()}
+        for layer in self.layers if layers is None else layers:
+            x = layer.forward(x, batch, self.kv, comm, rope[layer.rope_key])
         return x
 
     def normed(self, x):

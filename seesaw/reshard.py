@@ -14,15 +14,17 @@ import time
 import torch
 import torch.distributed as dist
 
-STAGE_BLOCKS = 2048     # at most 64 MB of staging per exchange
+STAGE_BLOCKS = 2048     # at most 64 MB of staging per KV exchange
+STAGE_BYTES = 64 << 20  # and per weight swap: merged gate_up halves are 118 MB
 
 
 def swap(t, peer, group):
-    """Exchange t with the peer's tensor of the same shape, in place."""
-    out = t.clone()
-    ops = [dist.P2POp(dist.isend, out, peer, group), dist.P2POp(dist.irecv, t, peer, group)]
-    for req in dist.batch_isend_irecv(ops):
-        req.wait()
+    """Exchange t with the peer's tensor of the same shape, in place, a piece at a time."""
+    for part in t.view(-1).split(STAGE_BYTES // t.element_size()):
+        out = part.clone()
+        ops = [dist.P2POp(dist.isend, out, peer, group), dist.P2POp(dist.irecv, part, peer, group)]
+        for req in dist.batch_isend_irecv(ops):
+            req.wait()
     return t.nbytes
 
 
