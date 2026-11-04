@@ -20,9 +20,12 @@ SIZES = (1, 2, 4, 8, 16, 24, 32)
 class Inputs:
     """Stands in for a Batch: same fields, at addresses that never change."""
 
-    def __init__(self, size, tables, dev):
+    def __init__(self, size, tables, dev, hidden=None):
         self.size = size
         self.tokens = torch.zeros(size, dtype=torch.int64, device=dev)
+        # PP stage 1 starts from the hidden states stage 0 sends, not from tokens.
+        if hidden:
+            self.hidden = torch.zeros((size, hidden), dtype=torch.bfloat16, device=dev)
         self.positions = torch.zeros(size, dtype=torch.int64, device=dev)
         self.cu_seqlens = torch.arange(size + 1, dtype=torch.int32, device=dev)
         self.seq_lens = torch.ones(size, dtype=torch.int32, device=dev)
@@ -53,20 +56,21 @@ class Inputs:
                      (self.table_full, table_full), (self.table_sliding, table_sliding),
                      (self.map_full, map_full), (self.map_sliding, map_sliding)):
             t.copy_(torch.from_numpy(a))
-        self.tokens[:n] = tokens
-        self.tokens[n:] = 0
+        if tokens is not None:
+            self.tokens[:n] = tokens
+            self.tokens[n:] = 0
 
 
 class DecodeGraphs:
-    def __init__(self, tables, dev, slots, step):
-        """step(inputs) runs one TP decode pass and returns hidden states."""
+    def __init__(self, tables, dev, slots, step, hidden=None):
+        """step(inputs) runs this GPU's part of a decode pass and returns hidden states."""
         self.tables = tables
         self.sizes = sorted({min(s, slots) for s in SIZES})
         self.graphs = {}
         pool = None
         # Largest first, so the smaller graphs fit in the pool it leaves.
         for size in reversed(self.sizes):
-            inputs = Inputs(size, tables, dev)
+            inputs = Inputs(size, tables, dev, hidden)
             step(inputs)    # a kernel's first launch loads it, which capture can't record
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph, pool=pool, stream=current_stream()):
@@ -74,10 +78,13 @@ class DecodeGraphs:
             pool = graph.pool() if pool is None else pool
             self.graphs[size] = (graph, inputs, out)
 
-    def step(self, slots, lens, tokens):
+    def step(self, slots, lens, tokens, before=None):
+        """before(inputs), if given, runs after the inputs are filled, e.g. to receive into them."""
         n = len(slots)
         size = next(s for s in self.sizes if s >= n)
         graph, inputs, out = self.graphs[size]
         inputs.fill(self.tables, slots, lens, tokens)
+        if before:
+            before(inputs)
         graph.replay()
         return out[:n]

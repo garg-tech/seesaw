@@ -45,7 +45,10 @@ class Engine:
         self.comm = dist.group.WORLD
         # Runs on the compute stream. torch's collectives use a second stream and
         # sync to it by event on every call, too slow for 96 all-reduces a step.
+        # PP decode also sends tokens back 1 -> 0 on it: a second NCCL group would cost
+        # GPU0 buffer memory it doesn't have at 26/22.
         self.tp_comm = PyNcclCommunicator(dist.new_group(backend="gloo"), dev)
+        self.side = torch.cuda.Stream(dev)
         self.dec = Decoder(self.cfg, snapshot_dir(), dev, range(len(self.cfg.layers)),
                            self.tables, max_len, halves=(rank,))
         self.split = split
@@ -207,6 +210,102 @@ class Engine:
             if on_step:
                 on_step(i, tokens)
         return tokens, lens
+
+    # ---------------------------------------------------------------- PP decode
+    def capture_pp_graphs(self):
+        """Per-stage decode graphs, one set per micro-batch: one group's output can still be
+        crossing to stage 1 while the other group runs."""
+        if self.rank == 0:
+            step, hidden = (lambda i: self.dec.forward(self.dec.embed(i.tokens), i, self.active)), None
+        else:
+            step, hidden = (lambda i: self.dec.forward(i.hidden, i, self.active)), self.cfg.hidden
+        half = (self.tables.slots + 1) // 2
+        with torch.inference_mode():
+            self.pp_graphs = [DecodeGraphs(self.tables, self.dev, half, step, hidden) for _ in range(2)]
+
+    def _stage(self, g, k):
+        """This GPU's layers for group g, k = 0/1. Stage 1 receives its input first."""
+        slots, lens = g["slots"], g["lens"]
+        for s, n in zip(slots, lens):
+            self.tables.extend(s, n + 1)
+        graphs = getattr(self, "pp_graphs", None)
+        if self.rank == 0:
+            if graphs:
+                y = graphs[k].step(slots, lens, g["tok"])
+            else:
+                y = self.dec.forward(self.dec.embed(g["tok"]), Batch(self.tables, slots, lens, [1] * len(slots), self.dev), self.active)
+        else:
+            recv = lambda x: dist.recv(x, 0, group=self.comm)
+            if graphs:
+                y = graphs[k].step(slots, lens, None, lambda i: recv(i.hidden[:len(slots)]))
+            else:
+                x = torch.empty((len(slots), self.cfg.hidden), dtype=torch.bfloat16, device=self.dev)
+                recv(x)
+                y = self.dec.forward(x, Batch(self.tables, slots, lens, [1] * len(slots), self.dev), self.active)
+        for s, n in zip(slots, lens):
+            self.tables.trim(s, n + 1)
+        return y
+
+    def decode_pp(self, slots, lens, tokens, left, greedy=False, report=None, force=None):
+        """Decode under PP the way vLLM runs it: two micro-batches in flight, so stage 0 runs
+        one group while stage 1 runs the other. Stage 1 samples, sends the tokens back to
+        stage 0 and calls report(slots, ids). force: {slot: tokens} feeds those back instead
+        of the sampled ones, for teacher-forced tests."""
+        cut = (len(slots) + 1) // 2
+        groups = [dict(k=k, slots=list(slots[a:b]), lens=list(lens[a:b]), left=list(left[a:b]),
+                       tok=tokens[a:b], step=0)
+                  for k, (a, b) in enumerate(((0, cut), (cut, len(slots)))) if b > a]
+        done = []      # stage 1: (slots, pinned ids, event) not yet reported
+        while groups:
+            for g in groups:
+                if self.rank == 0:
+                    if "recv" in g:             # waits on the stream, not the host
+                        torch.cuda.current_stream().wait_event(g.pop("recv"))
+                        g["tok"] = g.pop("tokbuf")[g.pop("keep")]
+                    if "send" in g:             # the graph's output is about to be overwritten
+                        g.pop("send").wait()
+                y = self._stage(g, g["k"])
+                more = any(n > 1 for n in g["left"])
+                keep = [i for i, n in enumerate(g["left"]) if n > 1]
+                if self.rank == 0:
+                    g["send"] = dist.isend(y, 1, group=self.comm)
+                    if more:
+                        g["tokbuf"] = torch.empty(len(g["slots"]), dtype=torch.int64, device=self.dev)
+                        g["keep"] = torch.tensor(keep, dtype=torch.long, device=self.dev)
+                        # On a side stream, so this GPU runs the other group while it waits.
+                        self.side.wait_stream(torch.cuda.current_stream())
+                        self.tp_comm.recv(g["tokbuf"], 1, stream=self.side)
+                        g["tokbuf"].record_stream(self.side)
+                        g["recv"] = torch.cuda.Event()
+                        g["recv"].record(self.side)
+                else:
+                    vals, ids = self._candidates(y, 1 if greedy else TOP_K)
+                    tok = out = self._choose(vals, ids, greedy)
+                    if force is not None and more:
+                        tok = torch.tensor([force[s][g["step"] + 1] for s in g["slots"]], device=self.dev)
+                    if more:
+                        self.tp_comm.send(tok, 0)
+                    host = torch.empty(len(out), dtype=torch.int64, pin_memory=True)
+                    host.copy_(out, non_blocking=True)
+                    ev = torch.cuda.Event()
+                    ev.record()
+                    done.append((list(g["slots"]), host, ev))
+                    while done and done[0][2].query():
+                        self._report(report, *done.pop(0)[:2])
+                g["step"] += 1
+                for key in ("slots", "lens", "left"):
+                    g[key] = [g[key][i] for i in keep]
+                g["lens"] = [n + 1 for n in g["lens"]]
+                g["left"] = [n - 1 for n in g["left"]]
+            groups = [g for g in groups if g["slots"]]
+        torch.cuda.synchronize()
+        for s, host, _ in done:
+            self._report(report, s, host)
+
+    @staticmethod
+    def _report(report, slots, host):
+        if report:
+            report(slots, host.tolist())
 
     def release(self, slots):
         for s in slots:

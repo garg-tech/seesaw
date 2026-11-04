@@ -1,7 +1,7 @@
 """Worker process: executes the scheduler's commands on one GPU.
 
 Both workers receive the same commands in the same order, so every collective
-lines up. Rank 0 reports decode tokens; whichever rank ends a prefill reports it.
+lines up. Whichever rank ends a pass reports its tokens: rank 0 under TP, rank 1 under PP.
 """
 import time
 import traceback
@@ -14,7 +14,11 @@ from .engine import Engine, init_worker
 def worker_main(rank, port, cmds, results, args):
     dev = init_worker(rank, port)
     try:
-        eng = Engine(rank, dev, args["slots"], args["max_len"], args["chunk"], split=args["split"])
+        pp = args["mode"] == "pp"
+        eng = Engine(rank, dev, args["slots"], args["max_len"], args["chunk"], split=args["split"],
+                     mode="pp" if pp else "tp", graphs=not pp)
+        if pp:
+            eng.capture_pp_graphs()
         results.put(("ready", rank))
         with torch.inference_mode():
             while True:
@@ -53,6 +57,13 @@ def run(eng, rank, cmd, a, results):
 def decode(eng, rank, results, seqs, greedy):
     """seqs: [(slot, tokens in cache, last token, tokens left)]. Runs until all are done."""
     dev = eng.dev
+    if eng.mode == "pp":        # stage 1 has the tokens, so it reports
+        report = (lambda slots, ids: results.put(("tokens", slots, ids))) if rank == 1 else None
+        eng.decode_pp([s[0] for s in seqs], [s[1] for s in seqs],
+                      torch.tensor([s[2] for s in seqs], device=dev), [s[3] for s in seqs], greedy, report)
+        if rank == 1:
+            results.put(("decode_done",))
+        return
     slots = [s[0] for s in seqs]
     lens = [s[1] for s in seqs]
     last = torch.tensor([s[2] for s in seqs], device=dev)

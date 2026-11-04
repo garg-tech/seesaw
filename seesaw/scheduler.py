@@ -1,5 +1,7 @@
 """Scheduling: fill the GPUs in PP, switch once, decode to completion in TP.
 
+--mode tp and --mode pp never switch: they are the same-engine baselines.
+
 Prefill keeps taking new requests until the queue is empty or the slots run out,
 so one switch serves as many sequences as possible. Decode then runs the batch to
 the end; `--ignore-eos` with fixed lengths ends a whole batch on the same step.
@@ -29,7 +31,7 @@ class Scheduler:
         self.waiting = collections.deque()
         self.wake = asyncio.Event()
         self.active = {}             # slot -> Request
-        self.layout = "tp"
+        self.layout = "pp" if mode == "pp" else "tp"
         self.results = asyncio.Queue()
 
     def submit(self, req):
@@ -94,7 +96,7 @@ class Scheduler:
         t0 = time.perf_counter()
         await self.collect()
         batch = self.admit()
-        use_pp = self.mode == "seesaw" and len(batch) >= self.min_switch
+        use_pp = self.mode == "pp" or (self.mode == "seesaw" and len(batch) >= self.min_switch)
         sw = await self.switch("pp" if use_pp else "tp")
         total = 0
         while batch:
@@ -111,7 +113,8 @@ class Scheduler:
             else:
                 req.out.put_nowait(None)
         if seqs:
-            sw += await self.switch("tp")
+            if self.mode != "pp":
+                sw += await self.switch("tp")
             self.send("decode", seqs, next(iter(self.active.values())).greedy)
             await self.expect("decode_done")
         t3 = time.perf_counter()

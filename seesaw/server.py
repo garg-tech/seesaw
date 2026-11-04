@@ -1,6 +1,6 @@
 """OpenAI-compatible server, enough for `vllm bench serve` and vllm-bench.sh.
 
-  python -m seesaw.server --mode seesaw       # or --mode tp, the engine's own TP2 baseline
+  python -m seesaw.server --mode seesaw       # or --mode tp / pp, the engine's own baselines
 """
 import argparse
 import asyncio
@@ -115,7 +115,7 @@ def build_app(args, sched_box, results, procs):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["seesaw", "tp"], default="seesaw")
+    p.add_argument("--mode", choices=["seesaw", "tp", "pp"], default="seesaw")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--slots", type=int, default=32)
     p.add_argument("--max-len", type=int, default=7200)
@@ -129,7 +129,8 @@ def main():
     ctx = mp.get_context("spawn")
     results = ctx.Queue()
     cmds = [ctx.Queue(), ctx.Queue()]
-    worker_args = {"slots": args.slots, "max_len": args.max_len, "chunk": args.chunk, "split": args.split}
+    worker_args = {"slots": args.slots, "max_len": args.max_len, "chunk": args.chunk, "split": args.split,
+                   "mode": args.mode}
     procs = [ctx.Process(target=worker_main, args=(r, 29411, cmds[r], results, worker_args), daemon=True)
              for r in range(2)]
     for proc in procs:
