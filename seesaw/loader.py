@@ -1,4 +1,4 @@
-"""Read tensors or slices of them straight to a GPU; nothing stays in host RAM."""
+"""Read tensors or slices of them straight to a GPU (or to host RAM when asked)."""
 import glob
 import os
 

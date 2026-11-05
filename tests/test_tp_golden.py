@@ -1,6 +1,6 @@
 """TP2 or PP2 across two workers must reproduce vLLM's greedy outputs.
 
-  python tests/test_tp_golden.py [tp|pp]   # needs tests/golden/golden.json from bench/capture_golden.py
+  python tests/test_tp_golden.py [tp|pp|tp-lean]   # needs tests/golden/golden.json from bench/capture_golden.py
 
 Teacher-forced on vLLM's tokens and compares log-probabilities, because near-ties
 flip under bf16 rounding and one flip would make every later token differ.
@@ -21,7 +21,9 @@ def worker(rank, port, cases, mode):
     from seesaw.kv_cache import Batch
     dev = init_worker(rank, port)
     max_len = max(len(c["prompt"]) + len(c["tokens"]) for c in cases) + 16
-    eng = Engine(rank, dev, slots=2, max_len=max_len, chunk=2048, mode=mode)
+    lean = mode == "tp-lean"     # Seesaw's split embedding, below the switch threshold
+    mode = "tp" if lean else mode
+    eng = Engine(rank, dev, slots=2, max_len=max_len, chunk=2048, mode=mode, lean=lean)
     report = 1 if mode == "pp" else 0     # the rank that sees logits
     orig = eng._candidates
     cap = {}

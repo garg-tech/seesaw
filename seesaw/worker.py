@@ -15,8 +15,9 @@ def worker_main(rank, port, cmds, results, args):
     dev = init_worker(rank, port)
     try:
         pp = args["mode"] == "pp"
+        # Seesaw decodes only in TP, so it can park KV and split the embedding (lean).
         eng = Engine(rank, dev, args["slots"], args["max_len"], args["chunk"], split=args["split"],
-                     mode="pp" if pp else "tp", graphs=not pp)
+                     mode="pp" if pp else "tp", graphs=not pp, lean=not pp)
         if pp:
             eng.capture_pp_graphs()
         results.put(("ready", rank))

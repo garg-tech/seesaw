@@ -37,11 +37,19 @@ def init_worker(rank, port):
 
 
 class Engine:
-    def __init__(self, rank, dev, slots, max_len, chunk, mode="tp", scratch_chunks=2, graphs=True, split=24):
-        self.rank, self.dev, self.chunk, self.mode = rank, dev, chunk, "tp"
+    def __init__(self, rank, dev, slots, max_len, chunk, mode="tp", scratch_chunks=2, graphs=True, split=24,
+                 lean=False):
+        """lean: Seesaw's memory savings on GPU0, which then can't decode under PP.
+        The extra layers' h1 KV is parked on GPU1 as each prefill ends (reshard.py), and
+        GPU0 keeps only its half of the embedding on the GPU, the rest in host RAM."""
+        self.rank, self.dev, self.chunk, self.mode, self.lean = rank, dev, chunk, "tp", lean
         self.cfg = ModelConfig.load()
+        window_blocks = (self.cfg.window + 15) // 16 + 1
+        # Staged blocks: the window of the one sequence carried into a chunk, the chunk
+        # itself, and a partly used block for each sequence in it, plus slack.
+        stage = window_blocks + chunk // 16 + slots + 8 if lean and rank == 0 else 0
         self.tables = BlockTables(slots, max_len, self.cfg.window,
-                                  scratch_blocks=scratch_chunks * (chunk // 16 + 1))
+                                  scratch_blocks=scratch_chunks * (chunk // 16 + 1), stage_blocks=stage)
         self.comm = dist.group.WORLD
         # Runs on the compute stream. torch's collectives use a second stream and
         # sync to it by event on every call, too slow for 96 all-reduces a step.
@@ -49,13 +57,13 @@ class Engine:
         # GPU0 buffer memory it doesn't have at 26/22.
         self.tp_comm = PyNcclCommunicator(dist.new_group(backend="gloo"), dev)
         self.side = torch.cuda.Stream(dev)
+        half = self.cfg.vocab // 2
         self.dec = Decoder(self.cfg, snapshot_dir(), dev, range(len(self.cfg.layers)),
-                           self.tables, max_len, halves=(rank,))
+                           self.tables, max_len, halves=(rank,), gpu_rows=half if lean and rank == 0 else None)
         self.split = split
-        self.resharder = Resharder(rank, self.dec.layers, self.dec.kv, self.tables, dev, self.comm, split)
+        self.resharder = Resharder(rank, self.dec.layers, self.dec.kv, self.tables, dev, self.comm, split, park=lean)
         self.active = self.dec.layers
         self._sending = None
-        half = self.cfg.vocab // 2
         self.vocab_start = rank * half
         self.head_w = self.dec.embed_w[self.vocab_start:self.vocab_start + half]
         self.gen = torch.Generator(dev).manual_seed(0)
@@ -131,15 +139,25 @@ class Engine:
         return tok
 
     # ---------------------------------------------------------------- forward
-    def _graph_step(self, inputs):
-        return self.dec.forward(self.dec.embed(inputs.tokens), inputs, self.dec.layers, self.tp_comm)
+    def _embed(self, tokens, host=None):
+        """host: the same tokens on the CPU, which lean GPU0 needs under PP."""
+        if not self.lean:
+            return self.dec.embed(tokens)
+        if self.mode == "tp":
+            half = self.cfg.vocab // 2
+            return self.dec.embed_part(tokens, self.rank * half, (self.rank + 1) * half, self.tp_comm)
+        assert host is not None, "lean GPU0 embeds from host token ids under PP: prefill only"
+        return self.dec.embed_host(host)
 
-    def _forward(self, tokens, b):
+    def _graph_step(self, inputs):
+        return self.dec.forward(self._embed(inputs.tokens), inputs, self.dec.layers, self.tp_comm)
+
+    def _forward(self, tokens, b, host=None):
         """Run this GPU's part of a pass. Returns hidden states on the GPU that ends it."""
         if self.mode == "tp":
-            return self.dec.forward(self.dec.embed(tokens), b, self.active, self.tp_comm)
+            return self.dec.forward(self._embed(tokens), b, self.active, self.tp_comm)
         if self.rank == 0:
-            x = self.dec.forward(self.dec.embed(tokens), b, self.active)
+            x = self.dec.forward(self._embed(tokens, host), b, self.active)
             # Only one pass waits to cross, so stage 0 stays one pass ahead of stage 1.
             if self._sending is not None:
                 self._sending.wait()
@@ -168,7 +186,8 @@ class Engine:
                 slots.append(s); starts.append(done); lens.append(n); toks.append(t[done:done + n])
                 room -= n
             b = Batch(self.tables, slots, starts, lens, self.dev)
-            y = self._forward(torch.from_numpy(np.concatenate(toks)).to(self.dev), b)
+            host = torch.from_numpy(np.concatenate(toks))
+            y = self._forward(host.to(self.dev, non_blocking=True), b, host)
             finished = [i for i in range(len(slots)) if starts[i] + lens[i] == len(pending[i][2])]
             if finished:
                 ends = b.cu_seqlens[1:].long() - 1
@@ -185,6 +204,8 @@ class Engine:
                             report(slots[i], t)
             for s, st, n in zip(slots, starts, lens):
                 self.tables.trim(s, st + n)
+            if self.mode == "pp":
+                self.resharder.park([slots[i] for i in finished])
             for i, n in enumerate(lens):
                 pending[i][1] += n
             pending = [p for p in pending if p[1] < len(p[2])]
@@ -215,6 +236,7 @@ class Engine:
     def capture_pp_graphs(self):
         """Per-stage decode graphs, one set per micro-batch: one group's output can still be
         crossing to stage 1 while the other group runs."""
+        assert not self.lean, "lean GPU0 can't decode under PP"
         if self.rank == 0:
             step, hidden = (lambda i: self.dec.forward(self.dec.embed(i.tokens), i, self.active)), None
         else:
@@ -251,6 +273,7 @@ class Engine:
         one group while stage 1 runs the other. Stage 1 samples, sends the tokens back to
         stage 0 and calls report(slots, ids). force: {slot: tokens} feeds those back instead
         of the sampled ones, for teacher-forced tests."""
+        assert not self.lean, "lean GPU0 can't decode under PP"
         cut = (len(slots) + 1) // 2
         groups = [dict(k=k, slots=list(slots[a:b]), lens=list(lens[a:b]), left=list(left[a:b]),
                        tok=tokens[a:b], step=0)

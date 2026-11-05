@@ -7,6 +7,10 @@ during a switch beyond one tensor of staging.
 A split above 24 leaves front layers with no partner. GPU0 holds their h1 in spare
 tensors allocated at startup, and GPU1's own copies sit idle under PP.
 
+With park=True (Seesaw, which decodes only in TP) GPU0's spare KV is a small staging
+pool instead of a full one. When a sequence finishes prefill, park() sends its extras'
+h1 KV straight to GPU1, which needs it for TP anyway, so the switch has none left to move.
+
 Both GPUs keep identical block tables, so block ids mean the same on either side.
 """
 import time
@@ -46,7 +50,7 @@ def exchange(mine, theirs, blocks, peer, group):
 
 
 class Resharder:
-    def __init__(self, rank, layers, kv, tables, dev, group, split):
+    def __init__(self, rank, layers, kv, tables, dev, group, split, park=False):
         self.rank, self.layers, self.kv, self.tables, self.dev, self.group = rank, layers, kv, tables, dev, group
         self.peer = 1 - rank
         idx = lambda ls, full: [l.spec.idx for l in ls if l.spec.full == full]
@@ -57,10 +61,14 @@ class Resharder:
         paired = {a for a, _ in self.pairs}
         self.extras = [l.spec.idx for l in front if l.spec.idx not in paired]
         assert not any(layers[a].spec.full for a in self.extras) and len(back) <= len(front), split
+        self.parks = park and bool(self.extras)
+        self.sending = []
         if rank == 0:
             self.spare_w = {a: {n: torch.empty_like(t) for n, t in layers[a].h[0].items()} for a in self.extras}
-            self.spare_k = {a: torch.empty_like(kv.k[a][0]) for a in self.extras}
-            self.spare_v = {a: torch.empty_like(kv.v[a][0]) for a in self.extras}
+            spare = lambda t: (t.new_empty((tables.stage_blocks, *t.shape[1:])) if self.parks
+                               else torch.empty_like(t))
+            self.spare_k = {a: spare(kv.k[a][0]) for a in self.extras}
+            self.spare_v = {a: spare(kv.v[a][0]) for a in self.extras}
         self.spares_loaded = False
         self.log = []
 
@@ -93,11 +101,53 @@ class Resharder:
                     (dist.recv if self.rank == 0 else dist.send)(w[name], self.peer, group=self.group)
                     n += w[name].nbytes
         self.spares_loaded = True
+        if self.parks and self.rank == 0:
+            self.kv.staged = {(a, 1) for a in self.extras}
+            self.tables.start_staging()
         return n
+
+    def park(self, slots):
+        """PP prefill: these sequences are done, so their extras' h1 KV goes to GPU1 now.
+        Both ranks call it at the same point, so the send lines up behind the hidden states."""
+        if not self.parks or not slots:
+            return 0
+        if self.rank == 0:
+            pool, stage = self.tables.unstage(slots)
+        else:
+            pool = [int(self.tables.sliding[s, b]) for s in slots for b in self.tables.held_sliding(s)]
+        if not pool:
+            return 0
+        if self.rank == 0:
+            idx = torch.tensor(stage, device=self.dev)
+            # Copied out first, so the next chunk can reuse the staging blocks at once.
+            buf = torch.stack([torch.stack([self.kv.k[a][1].index_select(0, idx),
+                                            self.kv.v[a][1].index_select(0, idx)]) for a in self.extras])
+            self.sending = [x for x in self.sending if not x[0].is_completed()]
+            self.sending.append((dist.isend(buf, self.peer, group=self.group), buf))
+        else:
+            t = self.kv.k[self.extras[0]][1]
+            buf = torch.empty((len(self.extras), 2, len(pool), *t.shape[1:]), dtype=t.dtype, device=self.dev)
+            dist.recv(buf, self.peer, group=self.group)
+            idx = torch.tensor(pool, device=self.dev)
+            for i, a in enumerate(self.extras):
+                self.kv.k[a][1].index_copy_(0, idx, buf[i, 0])
+                self.kv.v[a][1].index_copy_(0, idx, buf[i, 1])
+        return buf.nbytes
 
     def _extras_to_tp(self):
         """GPU0 made these sequences' h1 KV. GPU1 has to end up with it."""
         n = 0
+        if self.parks:      # already there
+            for req, _ in self.sending:
+                req.wait()
+            self.sending = []
+            if self.rank == 0:
+                for a in self.extras:
+                    self.layers[a].h.pop(1)
+                    self.kv.k[a].pop(1), self.kv.v[a].pop(1)
+                self.kv.staged = set()
+                self.tables.stop_staging()
+            return n
         for a in self.extras:
             if self.rank == 0:
                 self.layers[a].h.pop(1)

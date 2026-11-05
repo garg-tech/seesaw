@@ -133,7 +133,7 @@ class Layer:
             "down": ckpt.cols(p + "mlp.down_proj.weight", h * m, (h + 1) * m, d),
         }
 
-    def _attend(self, q, key_cache, value_cache, b, kv):
+    def _attend(self, q, key_cache, value_cache, b, kv, table):
         out = torch.empty_like(q)
         n = key_cache.shape[2]
         if not hasattr(b, "descale"):
@@ -146,7 +146,7 @@ class Layer:
             cu_seqlens_q=b.cu_seqlens, max_seqlen_q=b.max_q,
             seqused_k=b.seq_lens, max_seqlen_k=b.max_k,
             softmax_scale=self.scale, causal=True, window_size=self.window,
-            block_table=b.table_full if self.spec.full else b.table_sliding,
+            block_table=table,
             softcap=0, q_descale=None, k_descale=ones, v_descale=ones,
             seq_threshold_3D=SEGMENT_SEQS, num_par_softmax_segments=SEGMENTS,
             **kv.segments[self.spec.head_dim],
@@ -159,13 +159,16 @@ class Layer:
         for h, w in self.h.items():
             q, k, v = self._attn_in(x, self.norms["input_layernorm"], w["qkv"], self.q_norm, self.k_norm, cos, sin)
             if s.full:
-                kc, vc = kv.k[s.idx], kv.v[s.idx]
+                kc, vc, table = kv.k[s.idx], kv.v[s.idx], b.table_full
                 if y is None:       # both halves make the same K/V
                     triton_reshape_and_cache_flash(k, v, kc, vc, b.map_full, "auto", self.one, self.one)
             else:
                 kc, vc = kv.k[s.idx][h], kv.v[s.idx][h]
-                triton_reshape_and_cache_flash(k, v, kc, vc, b.map_sliding, "auto", self.one, self.one)
-            out = F.linear(self._attend(q, kc, vc, b, kv).flatten(-2), w["o"])
+                staged = (s.idx, h) in kv.staged
+                table = b.table_stage if staged else b.table_sliding
+                triton_reshape_and_cache_flash(k, v, kc, vc, b.map_stage if staged else b.map_sliding,
+                                               "auto", self.one, self.one)
+            out = F.linear(self._attend(q, kc, vc, b, kv, table).flatten(-2), w["o"])
             y = out if y is None else y + out
         if comm is not None:
             comm.all_reduce(y, y)
@@ -199,6 +202,7 @@ class KVStore:
 
     def __init__(self, specs, tables, device, halves):
         self.k, self.v, self.segments = {}, {}, {}
+        self.staged = set()     # (layer, half) whose KV is in the staging pool, see kv_cache.py
         for s in specs:
             # Scratch for the kernels' decode path. Layers run one at a time, so they share it.
             shape = (SEGMENT_SEQS, s.q_half, SEGMENTS)

@@ -1,6 +1,8 @@
 """PP prefill -> re-shard -> TP decode must match vLLM, then go back and do it again.
 
-  python tests/test_reshard.py [split]
+  python tests/test_reshard.py [split] [lean]
+
+lean is what Seesaw runs: extras' KV parked on GPU1 during prefill, split embedding.
 
 Uses the golden cases, teacher-forced like test_tp_golden.py. Three sequences are
 in flight at once so block ids and slot offsets get exercised, and the second
@@ -44,12 +46,12 @@ def check(eng, cases, dev, log):
     return np.array(errs)
 
 
-def worker(rank, port, cases, split):
+def worker(rank, port, cases, split, lean):
     from seesaw.engine import Engine, init_worker
     dev = init_worker(rank, port)
     log = (lambda *a: print(*a, flush=True)) if rank == 0 else (lambda *a: None)
     max_len = 6144 + 96
-    eng = Engine(rank, dev, slots=4, max_len=max_len, chunk=2048, mode="pp", split=split)
+    eng = Engine(rank, dev, slots=4, max_len=max_len, chunk=2048, mode="pp", split=split, lean=lean)
     log(f"startup {eng.resharder.log[-1]}")
     bad = 0
     with torch.inference_mode():
@@ -71,4 +73,5 @@ if __name__ == "__main__":
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    mp.spawn(worker, args=(port, cases, int(sys.argv[1]) if len(sys.argv) > 1 else 24), nprocs=2)
+    mp.spawn(worker, args=(port, cases, int(sys.argv[1]) if len(sys.argv) > 1 else 24, "lean" in sys.argv[2:]),
+             nprocs=2)
