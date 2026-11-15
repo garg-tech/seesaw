@@ -1,0 +1,4 @@
+{"config": "seesaw_26", "base_url": "http://gpu-box:8000", "date": "2026-11-02T20:14:02-05:00",
+ "server_version": {"version":"seesaw-seesaw"}, "models": {"object":"list","data":[{"id":"gemma4-12b","object":"model","owned_by":"seesaw","max_model_len":7200}]},
+ "num_gpu_blocks": "14400",
+ "client_vllm": "", "api": "completions"}

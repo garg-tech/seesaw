@@ -1,0 +1,4 @@
+{"config": "pp2", "base_url": "http://gpu-box:8000", "date": "2026-10-29T13:59:20-04:00",
+ "server_version": {"version":"0.31.0"}, "models": {"object":"list","data":[{"id":"gemma4-12b","object":"model","created":1793296760,"owned_by":"vllm","root":"google/gemma-4-12B-it","parent":null,"max_model_len":8192,"permission":[{"id":"modelperm-9ed1361e0c14fe11","object":"model_permission","created":1793296760,"allow_create_engine":false,"allow_sampling":true,"allow_logprobs":true,"allow_search_indices":false,"allow_view":true,"allow_fine_tuning":false,"organization":"*","group":null,"is_blocking":false}]}]},
+ "num_gpu_blocks": "15358",
+ "client_vllm": "", "api": "completions"}
