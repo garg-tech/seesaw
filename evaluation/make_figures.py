@@ -54,7 +54,7 @@ def concurrency_axis(ax):
 
 
 def throughput(out):
-    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.5), sharey=False)
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.9), sharey=False)
     for ax, (test, title) in zip(axes, TESTS.items()):
         for cfg, label, color, marker, lw in SERIES:
             ys = [value(cfg, test, n, "total_token_throughput") for n in LEVELS]
@@ -63,8 +63,10 @@ def throughput(out):
         ax.set_title(title, color=INK)
         ax.set_ylabel("total tokens/s (input + output)")
         ax.set_ylim(0, None)
-    axes[0].legend(loc="upper left", frameon=False, ncol=1)
-    fig.tight_layout()
+    # Legend in its own band above both panels, so it never covers a line.
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
     fig.savefig(os.path.join(out, "throughput.pdf"))
 
 
