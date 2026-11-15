@@ -314,16 +314,18 @@ to 1.24× over our PP (26/22 build), consistent with the gain over vLLM.
 `seesaw/kv_cache.py`, `seesaw/model/gemma4.py`, `seesaw/engine.py`.
 
 **Context and drivers.** 28/20 prefills 10% faster than 26/22 but did not fit 32 sequences
-on GPU0. Measured with `bench/mem_breakdown.py`: the four extra layers' weights add about
-0.83 GB, and their KV for 32 sequences about 1 GB. The paper's answer, spilling KV to CPU,
-is not available (ADR-005).
+on GPU0. In PP, GPU0's 28 layers pair with GPU1's 20 for the swap; the 8 unpaired "extra"
+layers keep a spare copy of their second half (weights and KV) on GPU0. Measured with
+`bench/mem_breakdown.py`: compared with 26/22 (4 extras), 28/20 adds about 0.83 GB of
+weights on GPU0, and the extras' spare KV for 32 sequences takes about 1 GB. The paper's
+answer, spilling KV to CPU, is not available (ADR-005).
 
 **Options considered.**
 1. Keep 26/22 (ADR-007).
 2. 28/20 at 24 slots.
-3. Park: the extra layers' `h1` KV is written to a small staging pool on GPU0 and sent to
-   GPU1, where TP needs it anyway, as soon as each prefill finishes. Parking alone gives
-   about 30 slots.
+3. Park: the extras' `h1` KV is written to a small staging pool on GPU0 (about 233 blocks
+   instead of 2338) and sent to GPU1, where TP needs it anyway, as soon as each prefill
+   finishes. Parking alone gives about 30 slots.
 4. Parking plus a split embedding: GPU0 keeps half of the 262144-row embedding (0.94 GB
    instead of 1.88 GB). TP looks tokens up vocab-parallel with one all-reduce, which is
    exact; in PP, GPU0 reads the other rows from host RAM.

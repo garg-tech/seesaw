@@ -57,8 +57,9 @@ flowchart LR
   the end. With fewer than 4 everything stays in TP.
 - **Half-tensors:** every layer's weights and KV are stored as two TP halves in both
   layouts, so a switch only swaps whole tensors between the GPUs over NCCL (1.8 to 2.0 s).
-- **Lean GPU0:** the 4 extra PP layers on GPU0 park their KV on GPU1 as each prefill ends,
-  and GPU0 keeps half of the embedding table. This is what lets 28/20 hold 32 sequences.
+- **Lean GPU0:** in PP, GPU0 runs 8 more layers than GPU1. Their second-half KV is sent
+  ("parked") to GPU1, where TP needs it anyway, as each prefill ends, and GPU0 keeps half
+  of the embedding table. This is what lets 28/20 hold 32 sequences.
 - **Kernels:** attention uses vLLM's Triton kernels; the rest of the decode step is fused
   with torch.compile and captured in CUDA graphs.
 
