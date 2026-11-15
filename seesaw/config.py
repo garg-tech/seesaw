@@ -9,7 +9,9 @@ BLOCK_SIZE = 16
 
 
 def snapshot_dir(hub=None):
-    hub = hub or os.path.expanduser("~/.cache/huggingface/hub")
+    """The downloaded checkpoint in the Hugging Face cache (HF_HUB_CACHE or HF_HOME respected)."""
+    hub = hub or os.environ.get("HF_HUB_CACHE") or os.path.join(
+        os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub")
     root = os.path.join(hub, REPO)
     with open(os.path.join(root, "refs", "main")) as f:
         return os.path.join(root, "snapshots", f.read().strip())
