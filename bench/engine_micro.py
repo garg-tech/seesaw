@@ -1,4 +1,4 @@
-"""Measure t_step(B) and prefill speed of the engine (PLAN.md Gates 1 and 2).
+"""Measure the engine alone: decode step time t_step(B) and PP prefill tok/s.
 
   python bench/engine_micro.py [--mode tp|pp] [--batches 1 4 16 32] [--chunk 2048]
 """

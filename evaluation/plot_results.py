@@ -3,13 +3,13 @@
 
 Single sweep (raw result files -> one PNG per metric + <tag>_summary.csv):
 
-  python plot_results.py --source vllm       "results/pp2/in6k_out512_n*.json" --tag pp2_in6k_out512
-  python plot_results.py --source genai-perf "artifacts/synthetic_n*"          --tag synthetic --gpu-rate-inr 210
+  python evaluation/plot_results.py --source vllm       "results/pp2/in6k_out512_n*.json" --tag pp2_in6k_out512
+  python evaluation/plot_results.py --source genai-perf "artifacts/synthetic_n*"          --tag synthetic --gpu-rate-inr 210
 
 Compare configs (summary CSVs written by the mode above -> one PNG per metric,
 one line per config):
 
-  python plot_results.py --compare "results/*/plots/*_in6k_out512_summary.csv" \
+  python evaluation/plot_results.py --compare "results/*/plots/*_in6k_out512_summary.csv" \
       --baseline tp2 pp2 --tag in6k_out512 --out-dir results/compare
 
   Entries are paths, globs, or label=path. Default labels are the CSV names with

@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# vllm bench serve — concurrency sweep against a remote server.
-# Run this from a machine that is NOT the GPU box (or at least a separate process).
+# vllm bench serve: a concurrency sweep against a running server (Seesaw engine or vLLM).
+# Run it from the benchmark client, which can be the GPU machine or another one.
 #
-#   ./setup-bench-client.sh            # once: venv with the vllm CLI + tokenizer check
-#   CONFIG=pp2 ./vllm-bench.sh         # after `CONFIG=pp2 ./serve.sh` on the GPU box
-#   CONFIG=tp2 ./vllm-bench.sh
+#   evaluation/setup-bench-client.sh                    # once: client virtualenv + tokenizer
+#   CONFIG=tp2 evaluation/vllm-bench.sh                 # after CONFIG=tp2 scripts/serve-vllm.sh
+#   CONFIG=seesaw_28L evaluation/vllm-bench.sh          # after scripts/serve-engine.sh seesaw --split 28
+#   CONFIG=x LEVELS="32 64" TESTS=in6k_out512 evaluation/vllm-bench.sh   # a subset
 #
 # Results land in results/<CONFIG>/<test>_n<N>.json, plots and a summary CSV in
-# results/<CONFIG>/plots/. Re-running skips levels that already have a result.
+# results/<CONFIG>/plots/. Re-running skips levels that already have a complete result.
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
+. scripts/env.sh
 
 CONFIG="${CONFIG:?set CONFIG to the server config being measured, e.g. CONFIG=pp2}"
-BASE_URL="${BASE_URL:-http://gpu-box:8000}"
 MODEL="${MODEL:-gemma4-12b}"                    # must match --served-model-name on the server
 TOKENIZER="${TOKENIZER:-google/gemma-4-12B-it}" # HF id or local path; must match the served model
 OUT_DIR="${OUT_DIR:-results/$CONFIG}"
@@ -139,7 +140,7 @@ run () {          # run <tag> <extra args...>
     fi
     sleep 5
   done
-  "$PY" plot_results.py "$OUT_DIR/${tag}_n*.json" \
+  "$PY" evaluation/plot_results.py "$OUT_DIR/${tag}_n*.json" \
     --tag "${CONFIG}_${tag}" --label "$CONFIG" --out-dir "$OUT_DIR/plots"
 }
 
@@ -190,4 +191,4 @@ for T in $TESTS; do
 done
 
 echo "done — JSON results in $OUT_DIR/, plots in $OUT_DIR/plots/"
-echo "compare configs:  $PY plot_results.py --compare \"results/*/plots/*_in6k_out512_summary.csv\" --baseline tp2 pp2 --tag in6k_out512 --out-dir results/compare"
+echo "compare configs:  $PY evaluation/plot_results.py --compare \"results/*/plots/*_in6k_out512_summary.csv\" --baseline tp2 pp2 --tag in6k_out512 --out-dir results/compare"

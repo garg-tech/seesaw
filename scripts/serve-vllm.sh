@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Launch a vLLM baseline for the Seesaw comparison. Run this ON THE GPU BOX.
+# Launch a vLLM baseline for the Seesaw comparison. Run this on the GPU machine.
 #
-#   CONFIG=pp2 ./serve.sh          # pipeline parallel: layers split across both GPUs
-#   CONFIG=tp2 ./serve.sh          # tensor parallel: every layer split across both GPUs
-#   CONFIG=pp2 ./serve.sh --max-num-batched-tokens 4096   # extra args go to vllm serve
+#   CONFIG=pp2 scripts/serve-vllm.sh          # pipeline parallel: layers split across both GPUs
+#   CONFIG=tp2 scripts/serve-vllm.sh          # tensor parallel: every layer split across both GPUs
+#   CONFIG=pp2 scripts/serve-vllm.sh --max-num-batched-tokens 4096   # extra args go to vllm serve
 #
-# Then, from the client machine:  CONFIG=pp2 ./vllm-bench.sh
+# Then, from the client:  CONFIG=pp2 evaluation/vllm-bench.sh
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 CONFIG="${CONFIG:-pp2}"
 MODEL_ID="${MODEL_ID:-google/gemma-4-12B-it}"
@@ -31,13 +31,14 @@ case "$PREFIX_CACHE" in
   *) echo "PREFIX_CACHE must be on or off"; exit 1 ;;
 esac
 
-# Use ./.venv if vllm isn't already on PATH.
+# Use the repository's virtualenv (or $SEESAW_VENV) if vllm isn't already on PATH.
+VENV="${SEESAW_VENV:-.venv}"
 if ! command -v vllm >/dev/null; then
-  if [ -x .venv/bin/vllm ]; then
-    source .venv/bin/activate
+  if [ -x "$VENV/bin/vllm" ]; then
+    source "$VENV/bin/activate"
   else
-    echo "ERROR: vllm not found on PATH or in $(pwd)/.venv. Install it first:"
-    echo "  uv venv --python 3.12 .venv && source .venv/bin/activate && uv pip install vllm==0.31.0"
+    echo "ERROR: vllm not found on PATH or in $VENV. Install it first (see README):"
+    echo "  uv venv --python 3.12 .venv && uv pip install --python .venv -r requirements/box.txt"
     exit 1
   fi
 fi
