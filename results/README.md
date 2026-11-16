@@ -18,6 +18,7 @@ server configuration.
 | `seesaw_26/` | Seesaw engine, `--split 26`, before fusion | First uneven split | 2026-11-02 to 11-03 |
 | `engine_tp/` | Seesaw engine, `--mode tp`, before fusion | First control, c = 1, 4, 16, 32, 64 | 2026-11-02 |
 | `compare_final/` | | Comparison plots of the six final configurations | |
+| `tests/` | | Output of the final test runs: `tests/run_gpu_tests.sh` on the GPU machine, `tests/test_server_e2e.py` against the 28/20 server, and that server's engine log | 2026-11-16 |
 
 In each folder:
 

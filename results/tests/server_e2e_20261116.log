@@ -1,0 +1,7 @@
+  ok  health 200, version seesaw-seesaw, model gemma4-12b, max_len 7200
+  ok  greedy reply 'The planet known as the Red Planet is **Mars**.<turn|>' in 2.6 s, usage {'prompt_tokens': 26, 'completion_tokens': 12, 'total_tokens': 38}
+  ok  streamed text equals the non-streamed text
+  ok  max_tokens=1 gives one token
+  ok  5 malformed requests refused with 400; server still serves
+  ok  40 concurrent requests, 16 tokens each, in 17.7 s
+PASS

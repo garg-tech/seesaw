@@ -1,0 +1,129 @@
+===== tests/test_scheduler.py (exit 0)
+  ok  test_single_request_stays_tp
+  ok  test_small_batch_stays_tp
+  ok  test_batch_switches_pp_then_tp
+  ok  test_more_requests_than_slots
+  ok  test_max_tokens_one
+  ok  test_tp_mode_never_switches
+  ok  test_pp_mode_never_switches
+PASS (7 tests)
+===== tests/test_layers_vs_hf.py 0 (exit 0)
+rounding floor (HF bf16 vs HF fp32): 9.28e-03
+ref: mean |y| 12.5835
+one chunk    mean rel err 8.42e-03  max abs 26.175  free blocks 386
+   worst positions [1275, 16, 13, 96, 51] [0.016, 0.016, 0.014, 0.014, 0.014]  by 200s [0.0098, 0.0084, 0.0081, 0.0079, 0.0079, 0.0078, 0.0087, 0.0087]
+chunks       mean rel err 8.40e-03  max abs 27.584  free blocks 386
+   worst positions [11, 2, 16, 21, 1] [0.019, 0.016, 0.015, 0.015, 0.014]  by 200s [0.0098, 0.0084, 0.008, 0.008, 0.008, 0.0079, 0.0084, 0.0087]
+decode tail  mean rel err 8.36e-03  max abs 27.161  free blocks 386
+   worst positions [1539, 18, 13, 12, 16] [0.015, 0.015, 0.015, 0.014, 0.014]  by 200s [0.0098, 0.0084, 0.008, 0.008, 0.0079, 0.0078, 0.0085, 0.0086]
+PASS
+===== tests/test_layers_vs_hf.py 1 (exit 0)
+rounding floor (HF bf16 vs HF fp32): 1.01e-02
+ref: mean |y| 12.5835
+one chunk    mean rel err 8.38e-03  max abs 26.057  free blocks 386
+   worst positions [12, 19, 11, 8, 1371] [0.015, 0.015, 0.014, 0.014, 0.013]  by 200s [0.0097, 0.0083, 0.0081, 0.008, 0.0079, 0.0078, 0.0085, 0.0087]
+chunks       mean rel err 8.53e-03  max abs 29.129  free blocks 386
+   worst positions [16, 4, 1, 8, 2] [0.019, 0.015, 0.014, 0.014, 0.014]  by 200s [0.0099, 0.0085, 0.0082, 0.0081, 0.0081, 0.0079, 0.0087, 0.0088]
+decode tail  mean rel err 8.33e-03  max abs 26.634  free blocks 386
+   worst positions [534, 12, 42, 15, 13] [0.016, 0.015, 0.015, 0.014, 0.014]  by 200s [0.0097, 0.0083, 0.008, 0.008, 0.0079, 0.0078, 0.0083, 0.0086]
+PASS
+===== tests/test_tp_golden.py tp (exit 0)
+   step 11: ours 236770 (-0.506) vs gold 236761 (ours -1.106, vLLM -0.805)
+case 0: prompt 5: logprob err mean 0.072 max 0.360, argmax flips 1/64
+case 1: prompt 18: logprob err mean 0.004 max 0.268, argmax flips 0/64
+   step 2: ours 236761 (-0.954) vs gold 236772 (ours -0.954, vLLM -0.905)
+   step 63: ours 236770 (-0.022) vs gold 236779 (ours -4.810, vLLM -0.647)
+case 2: prompt 14: logprob err mean 0.081 max 4.163, argmax flips 2/64
+   step 0: ours 19578 (-1.357) vs gold 1018 (ours -7.377, vLLM -2.181)
+   step 1: ours 100 (-0.406) vs gold 107 (ours -1.524, vLLM -0.801)
+case 3: prompt 1500: logprob err mean 0.116 max 5.196, argmax flips 4/64
+   step 0: ours 14510 (-0.005) vs gold 642 (ours -6.164, vLLM -1.920)
+case 4: prompt 6144: logprob err mean 0.072 max 4.244, argmax flips 1/64
+   step 0: ours 874 (-3.502) vs gold 6752 (ours -3.912, vLLM -3.683)
+   step 1: ours 197056 (-2.480) vs gold 236261 (ours -3.251, vLLM -3.026)
+case 5: prompt 6144: logprob err mean 0.017 max 0.229, argmax flips 2/64
+PASS
+===== tests/test_tp_golden.py pp (exit 0)
+[rank1]:[W1116 18:15:28.919668425 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank0]:[W1116 18:15:34.700838951 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+   step 11: ours 236770 (-0.385) vs gold 236761 (ours -1.362, vLLM -0.805)
+case 0: prompt 5: logprob err mean 0.078 max 0.557, argmax flips 1/64
+case 1: prompt 18: logprob err mean 0.002 max 0.114, argmax flips 0/64
+   step 1: ours 236761 (-1.022) vs gold 236772 (ours -1.114, vLLM -1.000)
+   step 2: ours 236761 (-0.965) vs gold 236772 (ours -0.965, vLLM -0.905)
+case 2: prompt 14: logprob err mean 0.087 max 4.643, argmax flips 3/64
+   step 0: ours 8678 (-1.962) vs gold 1018 (ours -2.898, vLLM -2.181)
+   step 34: ours 3618 (-0.617) vs gold 3495 (ours -0.898, vLLM -0.745)
+case 3: prompt 1500: logprob err mean 0.032 max 0.717, argmax flips 2/64
+   step 0: ours 14510 (-0.022) vs gold 642 (ours -6.038, vLLM -1.920)
+case 4: prompt 6144: logprob err mean 0.069 max 4.118, argmax flips 1/64
+   step 0: ours 874 (-3.633) vs gold 6752 (ours -3.906, vLLM -3.683)
+   step 1: ours 197056 (-2.807) vs gold 236261 (ours -3.287, vLLM -3.026)
+case 5: prompt 6144: logprob err mean 0.014 max 0.261, argmax flips 2/64
+PASS
+===== tests/test_tp_golden.py tp-lean (exit 0)
+   step 11: ours 236770 (-0.506) vs gold 236761 (ours -1.106, vLLM -0.805)
+case 0: prompt 5: logprob err mean 0.072 max 0.360, argmax flips 1/64
+case 1: prompt 18: logprob err mean 0.004 max 0.268, argmax flips 0/64
+   step 2: ours 236761 (-0.954) vs gold 236772 (ours -0.954, vLLM -0.905)
+   step 63: ours 236770 (-0.022) vs gold 236779 (ours -4.810, vLLM -0.647)
+case 2: prompt 14: logprob err mean 0.081 max 4.163, argmax flips 2/64
+   step 0: ours 19578 (-1.357) vs gold 1018 (ours -7.377, vLLM -2.181)
+   step 1: ours 100 (-0.406) vs gold 107 (ours -1.524, vLLM -0.801)
+case 3: prompt 1500: logprob err mean 0.116 max 5.196, argmax flips 4/64
+   step 0: ours 14510 (-0.005) vs gold 642 (ours -6.164, vLLM -1.920)
+case 4: prompt 6144: logprob err mean 0.072 max 4.244, argmax flips 1/64
+   step 0: ours 874 (-3.502) vs gold 6752 (ours -3.912, vLLM -3.683)
+   step 1: ours 197056 (-2.480) vs gold 236261 (ours -3.251, vLLM -3.026)
+case 5: prompt 6144: logprob err mean 0.017 max 0.229, argmax flips 2/64
+PASS
+===== tests/test_pp_decode.py 26 (exit 0)
+[rank0]:[W1116 18:19:48.552766918 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank1]:[W1116 18:19:48.600338981 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank1]:[W1116 18:20:02.608920990 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank0]:[W1116 18:20:08.132065301 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+split 26: logprob err mean per case [0.055, 0.025, 0.009, 0.023] max 2.325
+PASS
+===== tests/test_reshard.py 24 (exit 0)
+startup ('tp->pp', 0.7288683261722326, 5457838080, 0)
+round 0
+[rank1]:[W1116 18:22:18.554569418 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank0]:[W1116 18:22:18.942653020 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+  pp->tp: 0.66 s, weights 5.08 GB, kv 0.34 GB
+  logprob err mean per case [0.025, 0.009, 0.025] max 0.668
+  tp->pp: 0.57 s, weights 5.08 GB
+round 1
+  pp->tp: 0.60 s, weights 5.08 GB, kv 0.34 GB
+  logprob err mean per case [0.025, 0.009, 0.025] max 0.668
+  tp->pp: 0.57 s, weights 5.08 GB
+PASS
+===== tests/test_reshard.py 26 (exit 0)
+[rank0]:[W1116 18:24:34.959539548 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank1]:[W1116 18:24:34.968869655 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+startup ('tp->pp', 0.713774967007339, 5906104320, 0)
+round 0
+[rank1]:[W1116 18:24:34.530761144 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank0]:[W1116 18:24:35.905540860 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+  pp->tp: 0.59 s, weights 4.67 GB, kv 0.36 GB
+  logprob err mean per case [0.022, 0.008, 0.023] max 0.637
+  tp->pp: 0.54 s, weights 4.67 GB
+round 1
+  pp->tp: 0.58 s, weights 4.67 GB, kv 0.36 GB
+  logprob err mean per case [0.022, 0.008, 0.023] max 0.637
+  tp->pp: 0.54 s, weights 4.67 GB
+PASS
+===== tests/test_reshard.py 28 lean (exit 0)
+[rank1]:[W1116 18:26:44.616972005 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank0]:[W1116 18:26:44.619278289 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+startup ('tp->pp', 0.7289848336949944, 6354370560, 0)
+round 0
+[rank1]:[W1116 18:26:44.200786394 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 1] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+[rank0]:[W1116 18:26:45.604238229 ProcessGroupNCCL.cpp:4130] Warning: [PG ID 0 PG GUID 0(default_pg) Rank 0] An unbatched P2P op (send/recv) was called on this ProcessGroup with size 2.  In eager initialization mode, unbatched P2P ops are treated as independent collective ops, and are thus serialized with all other ops on this ProcessGroup, including other P2P ops. To avoid serialization, either create additional independent ProcessGroups for the P2P ops or use batched P2P ops. You can squash this warning by setting the environment variable TORCH_NCCL_SHOW_EAGER_INIT_P2P_SERIALIZATION_WARNING to false. (function operator())
+  pp->tp: 0.57 s, weights 4.25 GB, kv 0.29 GB
+  logprob err mean per case [0.023, 0.009, 0.02] max 0.615
+  tp->pp: 0.53 s, weights 4.25 GB
+round 1
+  pp->tp: 0.57 s, weights 4.25 GB, kv 0.29 GB
+  logprob err mean per case [0.023, 0.009, 0.02] max 0.615
+  tp->pp: 0.48 s, weights 4.25 GB
+PASS
