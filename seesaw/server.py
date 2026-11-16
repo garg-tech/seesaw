@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from transformers import AutoTokenizer
 
-from .config import BLOCK_SIZE, snapshot_dir
+from .config import BLOCK_SIZE, ModelConfig, snapshot_dir
 from .scheduler import Request, Scheduler
 from .worker import worker_main
 
@@ -27,6 +27,7 @@ log = logging.getLogger("seesaw")
 def build_app(args, sched_box, results, procs):
     app = FastAPI()
     tok = AutoTokenizer.from_pretrained(snapshot_dir())
+    vocab = ModelConfig.load().vocab
     model_id = args.served_name
 
     @app.on_event("startup")
@@ -69,9 +70,20 @@ def build_app(args, sched_box, results, procs):
 
     @app.post("/v1/completions")
     async def completions(body: dict):
-        prompt = body["prompt"]
-        ids = prompt if isinstance(prompt, list) else tok.encode(prompt)
-        max_tokens = body.get("max_tokens") or 16
+        # Validate here: a malformed request that reached the workers would crash both.
+        prompt = body.get("prompt")
+        if isinstance(prompt, str) and prompt:
+            ids = tok.encode(prompt)
+        elif (isinstance(prompt, list) and prompt
+              and all(type(t) is int and 0 <= t < vocab for t in prompt)):
+            ids = prompt
+        else:
+            raise HTTPException(400, "prompt must be a non-empty string or one list of token ids "
+                                     f"in [0, {vocab})")
+        max_tokens = body.get("max_tokens")
+        max_tokens = 16 if max_tokens is None else max_tokens
+        if type(max_tokens) is not int or max_tokens < 1:
+            raise HTTPException(400, "max_tokens must be a positive integer")
         if len(ids) + max_tokens > args.max_len:
             raise HTTPException(400, f"{len(ids)} + {max_tokens} tokens exceeds {args.max_len}")
         req = Request(ids, max_tokens, body.get("temperature") == 0)
