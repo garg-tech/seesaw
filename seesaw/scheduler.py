@@ -97,7 +97,7 @@ class Scheduler:
         await self.collect()
         batch = self.admit()
         use_pp = self.mode == "pp" or (self.mode == "seesaw" and len(batch) >= self.min_switch)
-        sw = await self.switch("pp" if use_pp else "tp")
+        sw_in = await self.switch("pp" if use_pp else "tp")     # TP -> PP, before prefill
         total = 0
         while batch:
             total += len(batch)
@@ -112,9 +112,10 @@ class Scheduler:
                 seqs.append((req.slot, len(req.tokens), req.first, req.max_tokens - 1))
             else:
                 req.out.put_nowait(None)
+        sw_out = 0.0                                            # PP -> TP, before decode
         if seqs:
             if self.mode != "pp":
-                sw += await self.switch("tp")
+                sw_out = await self.switch("tp")
             self.send("decode", seqs, next(iter(self.active.values())).greedy)
             await self.expect("decode_done")
         t3 = time.perf_counter()
@@ -125,5 +126,7 @@ class Scheduler:
                 req.out.put_nowait(None)
             self.free.append(s)
         self.active.clear()
-        log.info("round B=%d layout=%s prefill %.2fs switch %.2fs decode %.2fs",
-                 total, "pp" if use_pp else "tp", t1 - t0, sw, t3 - t1 - sw)
+        # prefill: from the round's start, less the switch into PP; switch: both directions
+        log.info("round B=%d layout=%s prefill %.2fs switch %.2fs (to PP %.2fs, to TP %.2fs) decode %.2fs",
+                 total, "pp" if use_pp else "tp", t1 - t0 - sw_in, sw_in + sw_out, sw_in, sw_out,
+                 t3 - t1 - sw_out)
