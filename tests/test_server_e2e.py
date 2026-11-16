@@ -5,12 +5,13 @@
 
 Cases:
   1. /health, /version and /v1/models answer, and the model is listed
-  2. a prompt the tests never used before, greedy: the reply is sensible and the
-     usage counts are exact
+  2. a question the tests never used before, in Gemma 4's chat format, greedy: the
+     answer is right and the usage counts are exact
   3. the same prompt streamed gives the same text as the non-streamed reply
   4. max_tokens=1 returns exactly one token
-  5. a prompt longer than the server's max_len is refused with HTTP 400, and the
-     server keeps serving
+  5. malformed requests are refused with HTTP 400 and the server keeps serving: a
+     prompt longer than max_len, a list of strings, an out-of-range token id, an
+     empty prompt, max_tokens=0
   6. 40 concurrent 1500-token requests, more than the 32 slots: all finish with all
      their tokens. In --mode seesaw this batch switches to PP and back; the engine
      log shows "round B=32 layout=pp" then "round B=8 layout=pp"
@@ -68,8 +69,9 @@ def main():
     max_len = models["data"][0].get("max_model_len", 7200)
     ok(f"health 200, version {ver.get('version')}, model {model}, max_len {max_len}")
 
-    # 2. an unseen prompt, greedy
-    prompt = "Question: Which planet in our solar system is known as the Red Planet?\nAnswer:"
+    # 2. an unseen question, greedy, in the chat format the instruction-tuned model expects
+    prompt = ("<bos><|turn>user\nWhich planet in our solar system is known as the Red Planet?"
+              "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
     t0 = time.time()
     r = complete(model, prompt, 12)
     text = r["choices"][0]["text"]
@@ -90,11 +92,20 @@ def main():
     assert r["usage"]["completion_tokens"] == 1 and len(r["choices"][0]["token_ids"]) == 1
     ok("max_tokens=1 gives one token")
 
-    # 5. too long: refused, and the server still works
-    status, raw = post("/v1/completions", {"model": model, "prompt": [1000] * max_len, "max_tokens": 16})
-    assert status == 400, (status, raw[:200])
+    # 5. malformed requests: refused before they reach the GPU workers, server keeps serving
+    bad = {
+        f"{max_len}-token prompt": {"prompt": [1000] * max_len, "max_tokens": 16},
+        "list of strings": {"prompt": ["input_ids", "attention_mask"], "max_tokens": 4},
+        "token id past the vocabulary": {"prompt": [1, 10 ** 7], "max_tokens": 4},
+        "empty prompt": {"prompt": "", "max_tokens": 4},
+        "max_tokens=0": {"prompt": "Hello", "max_tokens": 0},
+    }
+    for name, body in bad.items():
+        status, raw = post("/v1/completions", {"model": model, **body})
+        assert status == 400, (name, status, raw[:200])
+        assert get("/health")[0] == 200, name
     assert complete(model, prompt, 2)["usage"]["completion_tokens"] == 2
-    ok(f"{max_len}-token prompt refused with 400 ({json.loads(raw).get('detail')}); server still serves")
+    ok(f"{len(bad)} malformed requests refused with 400; server still serves")
 
     # 6. more concurrent requests than slots
     rng = random.Random(0)
