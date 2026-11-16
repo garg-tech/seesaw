@@ -151,12 +151,14 @@ several GB from disk per switch (judgement: slower than the measured NCCL exchan
 exchange moves about 6.3 GB from GPU0 and 4.5 GB from GPU1 at 28/20, in pieces of at most
 64 MB so the staging buffers stay small.
 
-**Consequences and trade-offs.** Both GPUs stop computing during a switch (1.8 to 2.0 s
-at 32 sequences, about 2% of a round). The switch cannot be overlapped with compute the way
+**Consequences and trade-offs.** Both GPUs stop computing during a switch: with 32
+sequences 0.7 s into PP and 1.2 s back to TP, 1.9 s per round, about 2.5% of a round with
+512 output tokens and 1.7% with 1024. The switch cannot be overlapped with compute the way
 the paper's asynchronous CPU pipeline can.
 
 **Evidence.** `bench/nccl_check.py` (link speeds); switch times in the engine log
-(`round ... switch 1.8s`); `tests/test_reshard.py`.
+(`round ... switch 1.89s (to PP 0.66s, to TP 1.23s)`, `results/tests/engine_e2e_20261116.log`);
+`tests/test_reshard.py`.
 
 **Revisit trigger.** At least about 64 GB of host RAM (then the paper's design, ADR-005
 option 1, becomes possible), or GPUs with peer-to-peer access.
@@ -191,8 +193,9 @@ paper's buffer allows. Requests that arrive during decode wait for the next roun
 TTFT is worse than vLLM's at c ≤ 32 (13.4 s vs 5.0 s at c = 16). With variable output
 lengths, finished sequences would leave slots idle until the round ends (ADR-001).
 
-**Evidence.** `tests/test_scheduler.py`; round timings in the engine log (`round B=32
-layout=pp prefill 46.2s switch 1.8s decode 60.0s` at 28/20).
+**Evidence.** `tests/test_scheduler.py`; round timings in the engine log, e.g. 32 requests
+of 6144 + 512 tokens at 28/20: `prefill 44.53s switch 1.89s ... decode 30.11s`
+(`results/tests/engine_e2e_20261116.log`).
 
 **Revisit trigger.** More host RAM (≥ 64 GB), or a workload with variable output lengths;
 either makes refilling decode from a buffer worthwhile.

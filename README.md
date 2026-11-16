@@ -56,7 +56,8 @@ flowchart LR
   them; then they switch to TP (every layer split in two) and decode the whole batch to
   the end. With fewer than 4 everything stays in TP.
 - **Half-tensors:** every layer's weights and KV are stored as two TP halves in both
-  layouts, so a switch only swaps whole tensors between the GPUs over NCCL (1.8 to 2.0 s).
+  layouts, so a switch only swaps whole tensors between the GPUs over NCCL (with 32
+  sequences: 0.7 s into PP, 1.2 s back to TP).
 - **Lean GPU0:** in PP, GPU0 runs 8 more layers than GPU1. Their second-half KV is sent
   ("parked") to GPU1, where TP needs it anyway, as each prefill ends, and GPU0 keeps half
   of the embedding table. This is what lets 28/20 hold 32 sequences.
@@ -135,18 +136,26 @@ The flags of `python -m seesaw.server` are `--mode seesaw|tp|pp`, `--split` (lay
 in PP, default 24), `--slots` (32), `--max-len` (7200 tokens, prompt + output),
 `--chunk` (2048, prefill chunk), `--min-switch-batch` (4), `--port` (8000).
 
-Example request:
+Example request. The model is instruction-tuned, so the prompt uses Gemma 4's chat format
+(without it, greedy decoding gives junk, from vLLM as well):
 
 ```bash
 curl -s localhost:8000/v1/completions -H 'Content-Type: application/json' -d '{
   "model": "gemma4-12b", "max_tokens": 12, "temperature": 0,
-  "prompt": "Question: Which planet in our solar system is known as the Red Planet?\nAnswer:"}'
+  "prompt": "<bos><|turn>user\nWhich planet in our solar system is known as the Red Planet?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"}'
 ```
 
-Expected: a JSON completion whose `text` names Mars, with `usage.completion_tokens` 12.
-Each round appears in the engine log, for example
-`round B=32 layout=pp prefill 46.20s switch 1.80s decode 60.00s` (a PP round of 32
-requests) or `round B=1 layout=tp ...` (a single request, no switch).
+Expected `text`: `The planet known as the Red Planet is **Mars**.<turn|>` with
+`usage.completion_tokens` 12 (vLLM gives the same sentence; it stops at the end-of-turn
+token, which this engine does not, see Limitations). Each round appears in the engine log:
+
+```
+round B=1 layout=tp prefill 0.25s switch 0.00s (to PP 0.00s, to TP 0.00s) decode 0.36s
+round B=32 layout=pp prefill 44.53s switch 1.89s (to PP 0.66s, to TP 1.23s) decode 30.11s
+```
+
+The first is a single request (no switch); the second a benchmark round of 32 requests of
+6144 + 512 tokens.
 
 Stop: `tmux kill-session -t engine`. The vLLM baselines start with
 `CONFIG=tp2 scripts/serve-vllm.sh` or `CONFIG=pp2 scripts/serve-vllm.sh` (foreground, Ctrl+C
@@ -157,13 +166,14 @@ to stop); stop one server before starting another, since each needs both GPUs.
 | Command | Where | Expected |
 |---|---|---|
 | `python tests/test_scheduler.py` | anywhere, no GPU | `PASS (7 tests)`: TP below 4 requests, PP→TP at 4 or more, more requests than slots, `max_tokens=1`, TP and PP modes never switch |
-| `tests/run_gpu_tests.sh` | GPU machine, GPUs free | Every line `PASS` (about 10 minutes): layers vs transformers on both GPUs, full model in TP, PP and lean TP vs vLLM's greedy outputs, pipelined PP decode, PP→TP→PP re-sharding at 24/24, 26/22 and 28/20 lean |
-| `python tests/test_server_e2e.py` | client, server running | `PASS`: health and model list, an unseen prompt answered correctly, streaming equals non-streaming, `max_tokens=1`, an over-long prompt refused with 400, 40 concurrent requests (more than the 32 slots) all complete |
+| `tests/run_gpu_tests.sh` | GPU machine, GPUs free | Every line `PASS` (about 18 minutes): layers vs transformers on both GPUs, full model in TP, PP and lean TP vs vLLM's greedy outputs, pipelined PP decode, PP→TP→PP re-sharding at 24/24, 26/22 and 28/20 lean |
+| `python tests/test_server_e2e.py` | client, server running | `PASS` (about 20 s): health and model list, an unseen prompt answered correctly, streaming equals non-streaming, `max_tokens=1`, malformed and over-long requests refused with 400, 40 concurrent requests (more than the 32 slots) all complete |
 
 The model tests are teacher-forced on vLLM's tokens and compare log-probabilities, because
 bf16 rounding can flip near-ties and one flip would change every later token. They pass
 when the mean error per case stays below a threshold; the printed numbers show the margin.
 `tests/golden/golden.json` was captured from vLLM TP2 with `bench/capture_golden.py`.
+Outputs of the final runs: [`results/tests/`](results/tests/).
 
 ## Reproduce the evaluation
 
@@ -233,6 +243,16 @@ seed 0, so every run sends the same token ids.
   more host RAM than the 15 GB available.
 - Specific to Gemma 4 12B and to two GPUs; the 28/20 split is tuned for this GPU pair.
 - Below 4 concurrent requests Seesaw is the TP mode (0.98 to 0.99 of vLLM TP2).
+- Every request generates exactly `max_tokens`: end-of-sequence and stop strings are ignored
+  (as the benchmark's `--ignore-eos` asks), and a client that disconnects does not cancel
+  its sequence.
+- Free-running greedy output matches vLLM token for token on 1 of the 6 reference prompts;
+  on the others it diverges at the first near-tie, as the 0 to 4 flips in the
+  teacher-forced tests predict. After the two long prompts even the first token differs.
+  This is attributed to bf16 rounding (our own output moves as much when only the prefill
+  chunk size changes), not proven.
+
+Open work is tracked in the [issues](https://github.com/garg-tech/seesaw/issues).
 
 ## Acknowledgements
 
