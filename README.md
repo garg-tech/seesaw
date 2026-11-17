@@ -129,7 +129,7 @@ evaluation/setup-bench-client.sh             # .venv-bench, tokenizer download, 
 
 ```bash
 scripts/serve-engine.sh seesaw --split 28    # in tmux session "engine"; ready in about 2 minutes
-tail -f logs/engine_seesaw_*.log             # "workers ready", then one line per round
+tail -f $(ls -t logs/engine_seesaw_*.log | head -1)   # newest log: "workers ready", then one line per round
 ```
 
 The flags of `python -m seesaw.server` are `--mode seesaw|tp|pp`, `--split` (layers on GPU0
@@ -204,7 +204,8 @@ seed 0, so every run sends the same token ids.
 
 ## Demo path
 
-1. `scripts/serve-engine.sh seesaw --split 28` and `tail -f logs/engine_seesaw_*.log`.
+1. `scripts/serve-engine.sh seesaw --split 28` and
+   `tail -f $(ls -t logs/engine_seesaw_*.log | head -1) | grep --line-buffered -E "workers ready|round"`.
 2. The example request above: one request, `layout=tp` in the log (no switch).
 3. `python tests/test_server_e2e.py`: the 40-request burst shows `layout=pp` rounds with
    their prefill, switch and decode times.
